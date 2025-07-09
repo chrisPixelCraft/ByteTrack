@@ -110,22 +110,66 @@ def v_iou_distance(atracks, btracks):
 
     return cost_matrix
 
-def embedding_distance(tracks, detections, metric='cosine'):
+def embedding_distance(tracks, detections, metric='cosine', use_smooth=True):
     """
+    Enhanced appearance-based distance for multi-camera tracking
     :param tracks: list[STrack]
     :param detections: list[BaseTrack]
-    :param metric:
+    :param metric: Distance metric ('cosine', 'euclidean')
+    :param use_smooth: Whether to use smoothed features
     :return: cost_matrix np.ndarray
     """
 
     cost_matrix = np.zeros((len(tracks), len(detections)), dtype=float)
     if cost_matrix.size == 0:
         return cost_matrix
-    det_features = np.asarray([track.curr_feat for track in detections], dtype=float)
-    #for i, track in enumerate(tracks):
-        #cost_matrix[i, :] = np.maximum(0.0, cdist(track.smooth_feat.reshape(1,-1), det_features, metric))
-    track_features = np.asarray([track.smooth_feat for track in tracks], dtype=float)
-    cost_matrix = np.maximum(0.0, cdist(track_features, det_features, metric))  # Nomalized features
+    
+    # Extract detection features
+    det_features = []
+    for track in detections:
+        if hasattr(track, 'curr_feat') and track.curr_feat is not None:
+            det_features.append(track.curr_feat)
+        else:
+            # Use dummy feature if no appearance feature available
+            det_features.append(np.zeros(512, dtype=float))
+    
+    # Extract track features
+    track_features = []
+    for track in tracks:
+        if use_smooth:
+            feat = track.get_feature_for_matching(use_smooth=True)
+        else:
+            feat = track.get_feature_for_matching(use_smooth=False)
+        
+        if feat is not None:
+            track_features.append(feat)
+        else:
+            # Use dummy feature if no appearance feature available
+            track_features.append(np.zeros(512, dtype=float))
+    
+    # Convert to numpy arrays
+    det_features = np.asarray(det_features, dtype=float)
+    track_features = np.asarray(track_features, dtype=float)
+    
+    # Handle empty feature cases
+    if det_features.size == 0 or track_features.size == 0:
+        return cost_matrix
+    
+    # Compute distance matrix
+    if metric == 'cosine':
+        # Cosine distance = 1 - cosine similarity
+        # Features should already be normalized
+        similarity_matrix = np.dot(track_features, det_features.T)
+        cost_matrix = 1.0 - similarity_matrix
+    elif metric == 'euclidean':
+        cost_matrix = cdist(track_features, det_features, metric='euclidean')
+    else:
+        # Fallback to scipy's cdist
+        cost_matrix = cdist(track_features, det_features, metric=metric)
+    
+    # Ensure non-negative costs
+    cost_matrix = np.maximum(0.0, cost_matrix)
+    
     return cost_matrix
 
 
@@ -157,20 +201,37 @@ def fuse_motion(kf, cost_matrix, tracks, detections, only_position=False, lambda
 
 
 def fuse_iou(cost_matrix, tracks, detections):
+    """Fuse ReID and IoU similarities for robust matching"""
     if cost_matrix.size == 0:
         return cost_matrix
+    
+    # Convert appearance distance to similarity
     reid_sim = 1 - cost_matrix
+    
+    # Compute IoU distance and convert to similarity
     iou_dist = iou_distance(tracks, detections)
     iou_sim = 1 - iou_dist
-    fuse_sim = reid_sim * (1 + iou_sim) / 2
+    
+    # Fuse ReID and IoU similarities
+    # Give more weight to ReID for cross-camera tracking
+    reid_weight = 0.7
+    iou_weight = 0.3
+    fuse_sim = reid_weight * reid_sim + iou_weight * iou_sim
+    
+    # Optional: incorporate detection scores
     det_scores = np.array([det.score for det in detections])
     det_scores = np.expand_dims(det_scores, axis=0).repeat(cost_matrix.shape[0], axis=0)
-    #fuse_sim = fuse_sim * (1 + det_scores) / 2
+    
+    # Boost similarity with detection confidence
+    # fuse_sim = fuse_sim * (0.5 + 0.5 * det_scores)
+    
+    # Convert back to cost
     fuse_cost = 1 - fuse_sim
     return fuse_cost
 
 
 def fuse_score(cost_matrix, detections):
+    """Fuse cost matrix with detection scores"""
     if cost_matrix.size == 0:
         return cost_matrix
     iou_sim = 1 - cost_matrix
@@ -179,3 +240,83 @@ def fuse_score(cost_matrix, detections):
     fuse_sim = iou_sim * det_scores
     fuse_cost = 1 - fuse_sim
     return fuse_cost
+
+
+def cross_camera_distance(tracks_a, tracks_b, metric='cosine', max_time_gap=300):
+    """
+    Compute cross-camera appearance distance between tracks from different cameras
+    :param tracks_a: list[STrack] from camera A
+    :param tracks_b: list[STrack] from camera B
+    :param metric: Distance metric
+    :param max_time_gap: Maximum time gap for valid cross-camera matching
+    :return: cost_matrix np.ndarray
+    """
+    cost_matrix = np.full((len(tracks_a), len(tracks_b)), np.inf, dtype=float)
+    
+    if len(tracks_a) == 0 or len(tracks_b) == 0:
+        return cost_matrix
+    
+    # Extract features from both camera tracks
+    features_a = []
+    features_b = []
+    
+    for track in tracks_a:
+        feat = track.get_feature_for_matching(use_smooth=True)
+        if feat is not None:
+            features_a.append(feat)
+        else:
+            features_a.append(np.zeros(512, dtype=float))
+    
+    for track in tracks_b:
+        feat = track.get_feature_for_matching(use_smooth=True)
+        if feat is not None:
+            features_b.append(feat)
+        else:
+            features_b.append(np.zeros(512, dtype=float))
+    
+    features_a = np.asarray(features_a, dtype=float)
+    features_b = np.asarray(features_b, dtype=float)
+    
+    # Compute appearance distance
+    if metric == 'cosine':
+        similarity_matrix = np.dot(features_a, features_b.T)
+        appearance_cost = 1.0 - similarity_matrix
+    else:
+        appearance_cost = cdist(features_a, features_b, metric=metric)
+    
+    # Apply temporal constraints
+    for i, track_a in enumerate(tracks_a):
+        for j, track_b in enumerate(tracks_b):
+            # Skip if same camera
+            if track_a.is_same_camera(track_b):
+                cost_matrix[i, j] = np.inf
+                continue
+            
+            # Apply time gap constraint
+            time_gap = abs(track_a.frame_id - track_b.frame_id)
+            if time_gap > max_time_gap:
+                cost_matrix[i, j] = np.inf
+                continue
+            
+            # Use appearance cost
+            cost_matrix[i, j] = appearance_cost[i, j]
+    
+    return cost_matrix
+
+
+def filter_same_camera_matches(matches, tracks_a, tracks_b):
+    """
+    Filter out matches between tracks from the same camera
+    :param matches: List of match tuples
+    :param tracks_a: List of tracks from first set
+    :param tracks_b: List of tracks from second set
+    :return: Filtered matches
+    """
+    filtered_matches = []
+    
+    for i, j in matches:
+        if i < len(tracks_a) and j < len(tracks_b):
+            if not tracks_a[i].is_same_camera(tracks_b[j]):
+                filtered_matches.append((i, j))
+    
+    return filtered_matches

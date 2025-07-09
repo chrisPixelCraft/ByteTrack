@@ -53,12 +53,54 @@ python3 tools/interpolation.py
 # Standard demo
 python3 tools/demo_track.py video -f exps/example/mot/yolox_x_mix_det.py -c pretrained/bytetrack_x_mot17.pth.tar --fp16 --fuse --save_result
 
-# NTU-MTMC demo
+# NTU-MTMC demo (single camera)
 PYTHONPATH=/root/ByteTrack:$PYTHONPATH python3 tools/demo_track.py video \
   -f exps/example/mot/yolox_m_mix_det.py \
   -c pretrained/bytetrack_m_mot17.pth.tar \
   --path NTU-MTMC/test/Cam1/Cam1.MP4 \
   --fp16 --fuse --save_result
+```
+
+### Multi-Camera Tracking (MCT)
+```bash
+# Quick test with 3 cameras (first 100 frames)
+python3 tools/demo_multi_camera_track.py --quick_test --cameras Cam1,Cam2,Cam3
+
+# Full processing with all cameras
+python3 tools/demo_multi_camera_track.py \
+  --cameras all \
+  --save_video \
+  --save_results \
+  --progress_bar
+
+# Custom camera selection
+python3 tools/demo_multi_camera_track.py \
+  --cameras Cam1,Cam2,Cam3,Cam4,Cam5 \
+  --save_video \
+  --save_results \
+  --progress_bar
+
+# Performance optimized
+python3 tools/demo_multi_camera_track.py \
+  --cameras all \
+  --fp16 \
+  --fuse \
+  --save_results
+
+# Custom model configuration
+python3 tools/demo_multi_camera_track.py \
+  -f exps/example/mot/yolox_m_mix_det.py \
+  -c pretrained/bytetrack_m_mot17.pth.tar \
+  --cameras Cam1,Cam2,Cam3 \
+  --save_video \
+  --save_results
+
+# With Fast-Reid integration
+python3 tools/demo_multi_camera_track.py \
+  --cameras Cam1,Cam2,Cam3 \
+  --reid_config path/to/fast_reid_config.yml \
+  --reid_model path/to/fast_reid_model.pth \
+  --save_results
 ```
 
 ### Data Preparation
@@ -85,6 +127,12 @@ python3 organize_ntu_dataset.py
 - **BYTETracker** (`yolox/tracker/byte_tracker.py`): Main tracking algorithm that associates every detection box, not just high-confidence ones
 - **STrack** (`yolox/tracker/byte_tracker.py`): Single track representation with Kalman filter state
 - **Matching** (`yolox/tracker/matching.py`): IoU distance, embedding distance, and cost matrix functions
+
+### Multi-Camera Tracking System
+- **MultiCameraTracker** (`yolox/tracker/multi_camera_tracker.py`): Coordinates multiple BYTETracker instances for cross-camera tracking
+- **GlobalTrackManager** (`yolox/tracker/global_track_manager.py`): Manages global track IDs and cross-camera associations
+- **CrossCameraAssociator** (`yolox/tracker/cross_camera_association.py`): Handles complex cross-camera association logic
+- **ReidExtractor** (`yolox/tracker/reid_extractor.py`): Fast-Reid integration for appearance feature extraction
 
 ### Detection Model
 - **YOLOX** (`yolox/models/yolox.py`): Object detection model with FPN backbone
@@ -138,10 +186,38 @@ The ByteTrack algorithm works by:
 - **DeepStream**: NVIDIA streaming platform (`deploy/DeepStream/`)
 
 ## NTU-MTMC Specific Workflow
+
+### Single Camera Tracking
 1. Organize dataset: `python3 organize_ntu_dataset.py`
 2. Run tracking per camera: Use `tools/demo_track.py` with camera-specific paths
 3. Organize results: `python3 organize_ntu_results.py`
 4. Evaluate: `python3 tools/ntu_mota.py`
+
+### Multi-Camera Tracking (MCT)
+1. **Quick Start**: `python3 tools/demo_multi_camera_track.py --quick_test --cameras Cam1,Cam2,Cam3`
+2. **Full Processing**: `python3 tools/demo_multi_camera_track.py --cameras all --save_video --save_results --progress_bar`
+3. **Output Structure**:
+   ```
+   MCT_outputs/
+   ├── tracking_results/
+   │   ├── Cam1.txt          # MOT format results per camera
+   │   ├── Cam2.txt
+   │   └── ...
+   ├── cross_camera_associations.txt  # Cross-camera associations
+   ├── Cam1_mct_output.mp4   # Visualization videos
+   └── ...
+   ```
+
+### MCT Command Line Arguments
+- `--cameras`: Camera selection (comma-separated or 'all')
+- `--quick_test`: Process first 100 frames only
+- `--save_video`: Save visualization videos
+- `--save_results`: Save MOT format tracking results
+- `--progress_bar`: Show progress during processing
+- `--fp16`: Use half-precision for faster inference
+- `--fuse`: Fuse model layers for optimization
+- `--reid_config`: Path to Fast-Reid config file
+- `--reid_model`: Path to Fast-Reid model file
 
 ## Common File Locations
 - **Pretrained models**: `pretrained/`
