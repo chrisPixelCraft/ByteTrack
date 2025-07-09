@@ -1,0 +1,4 @@
+curl -H "Authorization: Bearer ya29.a0AS3H6NyK-PbPTpRFpO27zHTJIq9DA5QRgccW1IajfFDZPEmDfe5nAurYNV1d5eKQWdyq0kLKWsfcLr2wkLMBqkHFnFzFyGIMTEp78PEHHhSGqnS0UKXACOTNCIwyzQwrDzlBbh77amqbQ7F5zCkSMs3P-CrcOJDDPQqcP2QvaCgYKAc4SARUSFQHGX2Mi3PagsD_E7QzWfytlhplMIA0175" https://www.googleapis.com/drive/v3/files/1tZ_merTuqkVOPGI1DSovOG3PhUckOMK-?alt=media -o data_vid_roi.zip
+unzip data_vid_roi.zip
+rm data_vid_roi.zip
+

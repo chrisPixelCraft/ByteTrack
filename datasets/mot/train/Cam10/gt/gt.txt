@@ -1,0 +1,1 @@
+/root/ByteTrack/NTU-MTMC/test/Cam10/gt/gt.txt

@@ -9,9 +9,9 @@
 <p align="center"><img src="assets/sota.png" width="500"/></p>
 
 > [**ByteTrack: Multi-Object Tracking by Associating Every Detection Box**](https://arxiv.org/abs/2110.06864)
-> 
+>
 > Yifu Zhang, Peize Sun, Yi Jiang, Dongdong Yu, Fucheng Weng, Zehuan Yuan, Ping Luo, Wenyu Liu, Xinggang Wang
-> 
+>
 > *[arXiv 2110.06864](https://arxiv.org/abs/2110.06864)*
 
 ## Demo Links
@@ -273,9 +273,57 @@ You can get the tracking results in each frame from 'online_targets'. You can re
 
 <img src="assets/palace_demo.gif" width="600"/>
 
+### Standard Demo
 ```shell
 cd <ByteTrack_HOME>
 python3 tools/demo_track.py video -f exps/example/mot/yolox_x_mix_det.py -c pretrained/bytetrack_x_mot17.pth.tar --fp16 --fuse --save_result
+```
+
+### NTU-MTMC Database Demo
+For NTU-MTMC dataset, use the following command structure:
+
+```shell
+cd <ByteTrack_HOME>
+# First, organize your NTU-MTMC dataset (run this once)
+python3 organize_ntu_dataset.py
+
+# Run tracking for individual cameras
+PYTHONPATH=/root/ByteTrack:$PYTHONPATH python3 tools/demo_track.py video \
+  -f exps/example/mot/yolox_m_mix_det.py \
+  -c pretrained/bytetrack_m_mot17.pth.tar \
+  --path NTU-MTMC/test/Cam1/Cam1.MP4 \
+  --fp16 --fuse --save_result
+
+# For other cameras, replace Cam1 with Cam2, Cam3, etc.
+# Available cameras: Cam1, Cam2, Cam3, Cam4, Cam5, Cam6, Cam7, Cam8, Cam9, Cam10, Cam11
+```
+
+#### NTU-MTMC Output Organization
+After running tracking, organize results for MOTA evaluation:
+
+```shell
+# Copy tracking results to expected location
+mkdir -p YOLOX_outputs/yolox_m_mix_det/track_results/
+cp YOLOX_outputs/yolox_m_mix_det/track_vis/[timestamp]/[timestamp].txt YOLOX_outputs/yolox_m_mix_det/track_results/Cam1.txt
+
+# Run MOTA evaluation
+python3 tools/ntu_mota.py
+```
+
+#### NTU-MTMC Dataset Structure
+Your dataset should be organized as:
+```
+datasets/mot/train/
+├── Cam1/gt/gt.txt -> NTU-MTMC/test/Cam1/gt/gt.txt
+├── Cam2/gt/gt.txt -> NTU-MTMC/test/Cam2/gt/gt.txt
+├── ...
+└── Cam11/gt/gt.txt -> NTU-MTMC/test/Cam11/gt/gt.txt
+
+YOLOX_outputs/yolox_m_mix_det/track_results/
+├── Cam1.txt  # Tracking results for Cam1
+├── Cam2.txt  # Tracking results for Cam2
+├── ...
+└── Cam11.txt # Tracking results for Cam11
 ```
 
 ## Deploy
