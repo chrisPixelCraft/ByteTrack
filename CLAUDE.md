@@ -224,6 +224,83 @@ The ByteTrack algorithm works by:
 - **Output results**: `YOLOX_outputs/`
 - **Dataset structure**: `datasets/mot/`
 - **Tracking results**: `YOLOX_outputs/*/track_results/`
+- **ReID models**: `reid_weight/`
+- **Fast-Reid configs**: `fast-reid-mct/configs/`
+
+## Fast-Reid Integration
+
+### PersonViT ReID Model
+```bash
+# Test PersonViT ReID functionality
+python3 test_personvit_reid.py
+
+# Quick demo with PersonViT (100 frames, 2 cameras)
+python3 demo_personvit_reid.py --mode quick --max_frames 100
+
+# Full demo with all cameras
+python3 demo_personvit_reid.py --mode full --save_video
+
+# Direct MCT usage with PersonViT
+python3 tools/demo_multi_camera_track.py \
+  --cameras Cam1,Cam2,Cam3 \
+  --reid_config reid_weight/personvit_config.yml \
+  --reid_model reid_weight/personvit_fastreid.pth \
+  --save_results
+```
+
+### Fast-Reid Evaluation
+```bash
+cd fast-reid-mct
+
+# Evaluate on Market-1501
+FASTREID_DATASETS=.. python3 tools/train_net.py \
+  --config-file configs/Market1501/bagtricks_R50-ibn.yml \
+  --eval-only \
+  MODEL.WEIGHTS pretrained/market_bot_R50-ibn.pth
+
+# Evaluate PersonViT on Market-1501
+python3 evaluate_personvit_market1501.py
+```
+
+### Dataset Downloads
+```bash
+# Download Market-1501 dataset
+python3 download_market_1501.py
+
+# Manual dataset setup (for other datasets)
+# See DATASET_DOWNLOAD_SUMMARY.md for detailed instructions
+```
+
+## Testing and Debugging
+
+```bash
+# Test single camera tracking
+PYTHONPATH=/root/ByteTrack:$PYTHONPATH python3 tools/demo_track.py video \
+  -f exps/example/mot/yolox_m_mix_det.py \
+  -c pretrained/bytetrack_m_mot17.pth.tar \
+  --path NTU-MTMC/test/Cam1/Cam1.MP4 \
+  --fp16 --fuse --save_result
+
+# Quick MCT test (3 cameras, 100 frames)
+python3 tools/demo_multi_camera_track.py \
+  --quick_test \
+  --cameras Cam1,Cam2,Cam3
+
+# Check GPU availability
+python3 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+
+# Verify ReID model files
+ls -la reid_weight/personvit_*
+ls -la pretrained/personvit_checkpoint0240.pth
+```
+
+## Performance Optimization Tips
+
+1. **Fast Mode**: Use `--fast_mode` for 3-5x speed improvement (smaller detection resolution)
+2. **Half Precision**: Combine `--fp16 --fuse` for maximum GPU optimization
+3. **Frame Limiting**: Use `--max_frames 1000` for quick testing
+4. **Camera Selection**: Start with 3 cameras before processing all 11
+5. **ReID Toggle**: Use `--enable_reid` for default R18 model, or omit for faster processing
 
 ## System Prompt Rules
 ```shell

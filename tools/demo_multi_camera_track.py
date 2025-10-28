@@ -50,6 +50,7 @@ try:
     from yolox.utils import fuse_model, get_model_info, postprocess
     from yolox.tracker.multi_camera_tracker import MultiCameraTracker
     from yolox.utils.visualize import plot_tracking
+    from yolox.data.data_augment import preproc
 except ImportError as e:
     print(f"Error importing YOLOX modules: {e}")
     print("Please ensure YOLOX is properly installed: python setup.py develop")
@@ -83,10 +84,11 @@ class MultiCameraDemo:
                  output_dir: str = "MCT_outputs",
                  reid_config: Optional[str] = None,
                  reid_model: Optional[str] = None,
-                 save_video: bool = True,
+                 save_video: bool = False,
                  save_results: bool = True,
                  fp16: bool = False,
-                 fuse: bool = False):
+                 fuse: bool = False,
+                 fast_mode: bool = False):
         """
         Initialize Multi-Camera Demo
 
@@ -112,6 +114,7 @@ class MultiCameraDemo:
         self.save_results = save_results
         self.fp16 = fp16
         self.fuse = fuse
+        self.fast_mode = fast_mode
 
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
@@ -137,9 +140,16 @@ class MultiCameraDemo:
 
         # Load experiment
         exp = get_exp(self.exp_file, None)
-        exp.test_conf = 0.25
-        exp.nmsthre = 0.45
-        exp.test_size = (800, 1440)
+        # Override experiment defaults for higher detection sensitivity
+        exp.test_conf = 0.1  # Lowered from default for higher sensitivity
+        exp.nmsthre = 0.7  # Slightly relaxed NMS threshold
+        logger.info(f"Using high-sensitivity settings: test_conf={exp.test_conf}, nmsthre={exp.nmsthre}")
+        # Use smaller resolution for faster processing if fast_mode is enabled
+        if hasattr(self, 'fast_mode') and self.fast_mode:
+            exp.test_size = (416, 736)  # Smaller resolution for speed
+            logger.info("Fast mode enabled: using smaller detection resolution (416x736)")
+        else:
+            exp.test_size = (800, 1440)  # Default resolution
 
         # Setup model
         model = exp.get_model()
@@ -162,6 +172,9 @@ class MultiCameraDemo:
             logger.error(f"Error loading model weights: {e}")
             raise RuntimeError(f"Failed to load model weights from {self.model_path}")
 
+        # Get model info before any precision conversion
+        logger.info(f"Model info: {get_model_info(model, exp.test_size)}")
+
         # Fuse model if requested
         if self.fuse:
             model = fuse_model(model)
@@ -178,23 +191,33 @@ class MultiCameraDemo:
         self.model = model
         self.exp = exp
 
-        logger.info(f"Model info: {get_model_info(model, exp.test_size)}")
-
     def _setup_tracker(self):
         """
         Setup multi-camera tracker
         """
-        # Create args object
+        # Create args object with increased detection sensitivity
         class Args:
             def __init__(self):
-                self.track_thresh = 0.5
+                self.track_thresh = 0.1  # Lowered from 0.5 for higher sensitivity
                 self.track_buffer = 30
-                self.match_thresh = 0.8
+                self.match_thresh = 0.6  # Lowered from 0.8 for more matches
+                self.aspect_ratio_thresh = 2.0  # Increased from 1.6 to allow more aspect ratios
+                self.min_box_area = 5  # Lowered from 10 for smaller objects
                 self.mot20 = False
                 self.device = "cuda" if torch.cuda.is_available() else "cpu"
-                self.use_reid = True
+                # Only use ReID if explicitly configured to avoid performance issues
+                self.use_reid = False  # Default to False for performance
 
         args = Args()
+        # Enable ReID if model is provided (config can be None for default)
+        if self.reid_model:
+            args.use_reid = True
+            if self.reid_config:
+                logger.info("Fast-Reid enabled with custom config and model")
+            else:
+                logger.info("Fast-Reid enabled with default config and custom model")
+        else:
+            logger.info("Fast-Reid disabled for performance (use --reid_model to enable)")
 
         # Initialize multi-camera tracker
         try:
@@ -204,7 +227,7 @@ class MultiCameraDemo:
                 reid_config=self.reid_config,
                 reid_model=self.reid_model,
                 cross_camera_thresh=0.4,
-                cross_camera_interval=30,
+                cross_camera_interval=60,
                 max_time_gap=300
             )
             logger.info("Multi-camera tracker initialized successfully")
@@ -306,6 +329,8 @@ class MultiCameraDemo:
                     results = self._process_frames(frames)
                 except Exception as e:
                     logger.error(f"Error processing frame {frame_count}: {e}")
+                    # Continue processing despite errors
+                    results = {camera_id: [] for camera_id in frames.keys()}
                     continue
 
                 # Save results
@@ -371,7 +396,7 @@ class MultiCameraDemo:
         # Run detection on all frames
         for camera_id, frame in frames.items():
             # Preprocess frame
-            img, ratio = self._preprocess_frame(frame)
+            img, img_info = self._preprocess_frame(frame)
 
             # Run detection
             with torch.no_grad():
@@ -380,15 +405,15 @@ class MultiCameraDemo:
                     outputs, self.exp.num_classes, self.exp.test_conf, self.exp.nmsthre
                 )
 
-            # Store results
+            # Store results without aggressive filtering - let ByteTracker handle it
             if outputs[0] is not None:
                 detections_dict[camera_id] = outputs[0]
-                img_info_dict[camera_id] = (frame.shape[0], frame.shape[1])
-                img_size_dict[camera_id] = img.shape[2:]
+                img_info_dict[camera_id] = [img_info["height"], img_info["width"]]
+                img_size_dict[camera_id] = self.exp.test_size
             else:
                 detections_dict[camera_id] = np.empty((0, 5))
-                img_info_dict[camera_id] = (frame.shape[0], frame.shape[1])
-                img_size_dict[camera_id] = img.shape[2:]
+                img_info_dict[camera_id] = [img_info["height"], img_info["width"]]
+                img_size_dict[camera_id] = self.exp.test_size
 
         # Update tracker
         results = self.tracker.update(
@@ -402,16 +427,19 @@ class MultiCameraDemo:
 
     def _preprocess_frame(self, frame: np.ndarray) -> tuple:
         """
-        Preprocess frame for detection
+        Preprocess frame for detection using standard ByteTrack preprocessing
 
         Args:
             frame: Input frame
 
         Returns:
-            Preprocessed tensor and ratio
+            Preprocessed tensor and image info
         """
-        img_size = self.exp.test_size
-        img, ratio = self._resize_image(frame, img_size)
+        # Use the same preprocessing as standard ByteTrack demo
+        rgb_means = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
+
+        img, ratio = preproc(frame, self.exp.test_size, rgb_means, std)
 
         # Convert to tensor
         img = torch.from_numpy(img).unsqueeze(0).float()
@@ -422,41 +450,19 @@ class MultiCameraDemo:
         if self.fp16:
             img = img.half()
 
-        return img, ratio
+        # Create image info like standard demo
+        height, width = frame.shape[:2]
+        img_info = {
+            "height": height,
+            "width": width,
+            "ratio": ratio
+        }
 
-    def _resize_image(self, image: np.ndarray, target_size: tuple) -> tuple:
-        """
-        Resize image while maintaining aspect ratio
-
-        Args:
-            image: Input image
-            target_size: Target size (height, width)
-
-        Returns:
-            Resized image and ratio
-        """
-        h, w = image.shape[:2]
-        target_h, target_w = target_size
-
-        # Calculate ratio
-        ratio = min(target_h / h, target_w / w)
-
-        # Resize image
-        new_h, new_w = int(h * ratio), int(w * ratio)
-        resized = cv2.resize(image, (new_w, new_h))
-
-        # Create padded image
-        padded = np.full((target_h, target_w, 3), 114, dtype=np.uint8)
-        padded[:new_h, :new_w] = resized
-
-        # Convert to CHW format
-        padded = padded.transpose(2, 0, 1)
-
-        return padded, ratio
+        return img, img_info
 
     def _save_frame_results(self, results: Dict[str, List], frame_id: int):
         """
-        Save tracking results for current frame
+        Save tracking results for current frame with standard ByteTrack filtering
 
         Args:
             results: Dictionary of camera_id -> tracked objects
@@ -465,15 +471,19 @@ class MultiCameraDemo:
         for camera_id, tracks in results.items():
             for track in tracks:
                 if track.is_activated:
-                    # MOT format: frame_id, track_id, x, y, w, h, conf, class, visibility
-                    x, y, w, h = track.tlwh
+                    # Get track info
+                    tlwh = track.tlwh
+                    x, y, w, h = tlwh
                     global_id = track.get_display_id()
 
-                    # Use actual frame number (frame_id + 1) and format coordinates as integers to match ground truth
-                    # MOT format: [frame, ID, left, top, width, height, 1, -1, -1, -1] where 7th field is 1 for valid detection
-                    actual_frame_num = frame_id + 1
-                    result_line = f"{actual_frame_num},{global_id},{int(round(x))},{int(round(y))},{int(round(w))},{int(round(h))},1,-1,-1,-1\n"
-                    self.results[camera_id].append(result_line)
+                    # Apply standard ByteTrack filtering (same as demo_track.py)
+                    vertical = tlwh[2] / tlwh[3] > 1.6  # aspect_ratio_thresh
+                    if tlwh[2] * tlwh[3] > 10 and not vertical:  # min_box_area and aspect ratio filter
+                        # Use actual frame number (frame_id + 1) and format coordinates as integers to match ground truth
+                        # MOT format: [frame, ID, left, top, width, height, 1, -1, -1, -1] where 7th field is 1 for valid detection
+                        actual_frame_num = frame_id + 1
+                        result_line = f"{actual_frame_num},{global_id},{int(round(x))},{int(round(y))},{int(round(w))},{int(round(h))},1,-1,-1,-1\n"
+                        self.results[camera_id].append(result_line)
 
     def _save_visualization(self, frames: Dict[str, np.ndarray], results: Dict[str, List]):
         """
@@ -483,6 +493,10 @@ class MultiCameraDemo:
             frames: Dictionary of camera_id -> frame
             results: Dictionary of camera_id -> tracked objects
         """
+        # Only create visualization if video writers are active
+        if not self.video_writers:
+            return
+
         # Create visualization with cross-camera associations
         try:
             vis_frames = self.tracker.visualize_cross_camera_associations(results, frames)
@@ -604,6 +618,11 @@ def make_parser():
         type=str,
         help="Path to Fast-Reid model file"
     )
+    parser.add_argument(
+        "--enable_reid",
+        action="store_true",
+        help="Enable Fast-Reid with default ResNet34 (v17) model for better cross-camera association"
+    )
 
     # Output arguments
     parser.add_argument(
@@ -651,6 +670,11 @@ def make_parser():
         "--fuse",
         action="store_true",
         help="Fuse model for faster inference"
+    )
+    parser.add_argument(
+        "--fast_mode",
+        action="store_true",
+        help="Use smaller detection resolution for faster processing"
     )
 
     return parser
@@ -712,18 +736,35 @@ def main():
 
         logger.info(f"Found {len(camera_paths)} cameras: {list(camera_paths.keys())}")
 
+        # Handle Fast-Reid configuration
+        reid_config = args.reid_config
+        reid_model = args.reid_model
+
+        # If --enable_reid is specified but no custom config/model, use defaults
+        if args.enable_reid and not reid_config and not reid_model:
+            # Use default Fast-Reid config and v17 model (ResNet34 - better accuracy)
+            reid_config = None  # Will use default config
+            reid_model = "/root/ByteTrack/reid_weight/v17.pth"
+            logger.info("Using default Fast-Reid configuration with v17 model (ResNet34)")
+
+        # If only reid_model is provided, use default config
+        elif reid_model and not reid_config:
+            reid_config = None  # Will use default config
+            logger.info(f"Using default Fast-Reid configuration with custom model: {reid_model}")
+
         # Create and run demo
         demo = MultiCameraDemo(
             exp_file=args.exp_file,
             model_path=args.ckpt,
             camera_paths=camera_paths,
             output_dir=args.output_dir,
-            reid_config=args.reid_config,
-            reid_model=args.reid_model,
+            reid_config=reid_config,
+            reid_model=reid_model,
             save_video=args.save_video,
             save_results=args.save_results,
             fp16=args.fp16,
-            fuse=args.fuse
+            fuse=args.fuse,
+            fast_mode=args.fast_mode
         )
 
         # Run tracking

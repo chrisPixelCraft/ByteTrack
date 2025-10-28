@@ -144,3 +144,30 @@ YOLOX_outputs
 /.serena
 /.claude
 Cam4.mp4
+
+# Multi-Camera Tracking (MCT) outputs
+MCT_outputs/
+*.mp4
+*.avi
+*.mov
+
+# ReID model weights (large files)
+reid_weight/
+
+# Datasets (too large for git)
+Market-1501*/
+datasets/*.zip
+datasets/DukeMTMC-reID/
+datasets/MSMT17*/
+datasets/VeRi*/
+datasets/VehicleID/
+datasets/VERIWild/
+
+# Generated results and evaluation outputs
+results*.json
+ntu_mtmc_results.json
+*.txt.bak
+
+# Temporary and cache files
+.DS_Store
+Thumbs.db

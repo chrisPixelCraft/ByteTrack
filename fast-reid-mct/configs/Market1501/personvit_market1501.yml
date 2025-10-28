@@ -1,8 +1,7 @@
-
 MODEL:
   META_ARCHITECTURE: Baseline
-  PIXEL_MEAN: [127.5, 127.5, 127.5]
-  PIXEL_STD: [127.5, 127.5, 127.5]
+  PIXEL_MEAN: [123.675, 116.28, 103.53]
+  PIXEL_STD: [58.395, 57.12, 57.375]
 
   BACKBONE:
     NAME: build_vit_backbone
@@ -22,23 +21,24 @@ MODEL:
     POOL_LAYER: Identity
     NECK_FEAT: before
     CLS_LAYER: Linear
+    NUM_CLASSES: 751  # Market-1501 has 751 identities
 
   LOSSES:
     NAME: ("CrossEntropyLoss", "TripletLoss",)
 
     CE:
-      EPSILON: 0. # no smooth
-      SCALE: 1.
+      EPSILON: 0.0
+      SCALE: 1.0
 
     TRI:
-      MARGIN: 0.0
+      MARGIN: 0.3
       HARD_MINING: True
       NORM_FEAT: False
-      SCALE: 1.
+      SCALE: 1.0
 
 INPUT:
-  SIZE_TRAIN: [ 256, 128 ]
-  SIZE_TEST: [ 256, 128 ]
+  SIZE_TRAIN: [256, 128]
+  SIZE_TEST: [256, 128]
 
   REA:
     ENABLED: True
@@ -58,14 +58,14 @@ DATALOADER:
 SOLVER:
   AMP:
     ENABLED: False
-  OPT: SGD
+  OPT: AdamW
   MAX_EPOCH: 120
-  BASE_LR: 0.008
-  WEIGHT_DECAY: 0.0001
+  BASE_LR: 0.00035
+  WEIGHT_DECAY: 0.0005
   IMS_PER_BATCH: 64
 
   SCHED: CosineAnnealingLR
-  ETA_MIN_LR: 0.000016
+  ETA_MIN_LR: 3.5e-07
 
   WARMUP_FACTOR: 0.01
   WARMUP_ITERS: 1000
@@ -85,4 +85,4 @@ DATASETS:
   NAMES: ("Market1501",)
   TESTS: ("Market1501",)
 
-OUTPUT_DIR: logs/market1501/sbs_vit_base
+OUTPUT_DIR: logs/market1501/personvit

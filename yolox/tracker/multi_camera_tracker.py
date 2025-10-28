@@ -27,7 +27,7 @@ class MultiCameraTracker:
                  reid_config: Optional[str] = None,
                  reid_model: Optional[str] = None,
                  cross_camera_thresh: float = 0.4,
-                 cross_camera_interval: int = 30,
+                 cross_camera_interval: int = 60,
                  max_time_gap: int = 300):
         """
         Initialize Multi-Camera Tracker
@@ -170,6 +170,17 @@ class MultiCameraTracker:
             camera_id = getattr(track, 'camera_id', track_to_camera.get(id(track)))
             if camera_id:
                 camera_tracks[camera_id].append(track)
+
+        # Limit tracks per camera to prevent excessive computation
+        max_tracks_per_camera = 20
+        for camera_id in camera_tracks:
+            if len(camera_tracks[camera_id]) > max_tracks_per_camera:
+                # Keep only the most confident tracks
+                camera_tracks[camera_id] = sorted(
+                    camera_tracks[camera_id], 
+                    key=lambda t: getattr(t, 'score', 0), 
+                    reverse=True
+                )[:max_tracks_per_camera]
 
         # Perform pairwise cross-camera association
         camera_list = list(camera_tracks.keys())
@@ -382,3 +393,88 @@ class MultiCameraTracker:
         ]
 
         return colors[global_id % len(colors)]
+
+    def visualize_cross_camera_associations(self, results: Dict, frames: Dict) -> Dict:
+        """
+        Visualize cross-camera associations on video frames
+
+        Args:
+            results: Dictionary of camera_id -> tracked objects
+            frames: Dictionary of camera_id -> frame
+
+        Returns:
+            Dictionary of camera_id -> visualized frame
+        """
+        try:
+            import cv2
+
+            vis_frames = {}
+
+            for camera_id, frame in frames.items():
+                if camera_id not in results:
+                    vis_frames[camera_id] = frame.copy()
+                    continue
+
+                vis_frame = frame.copy()
+                tracks = results[camera_id]
+
+                # Draw tracks with consistent colors based on global ID
+                for track in tracks:
+                    if hasattr(track, 'is_activated') and track.is_activated:
+                        # Get bounding box
+                        if hasattr(track, 'tlwh'):
+                            x, y, w, h = track.tlwh
+                            x, y, w, h = int(x), int(y), int(w), int(h)
+
+                            # Get global ID for consistent coloring
+                            global_id = getattr(track, 'global_track_id', track.track_id)
+                            color = self._get_color_for_global_id(global_id)
+
+                            # Draw bounding box
+                            cv2.rectangle(vis_frame, (x, y), (x + w, y + h), color, 2)
+
+                            # Draw track ID
+                            label = f"G{global_id}"
+                            if hasattr(track, 'track_id'):
+                                label += f" L{track.track_id}"
+
+                            # Calculate label position
+                            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                            label_x = x
+                            label_y = y - 10 if y - 10 > 10 else y + h + 20
+
+                            # Draw label background
+                            cv2.rectangle(vis_frame,
+                                        (label_x, label_y - label_size[1] - 5),
+                                        (label_x + label_size[0], label_y + 5),
+                                        color, -1)
+
+                            # Draw label text
+                            cv2.putText(vis_frame, label, (label_x, label_y),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+                # Add camera ID and statistics
+                camera_label = f"Camera: {camera_id}"
+                active_tracks = len([t for t in tracks if hasattr(t, 'is_activated') and t.is_activated])
+                stats_label = f"Active: {active_tracks}"
+
+                cv2.putText(vis_frame, camera_label, (10, 30),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(vis_frame, stats_label, (10, 60),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                # Add cross-camera association info
+                if hasattr(self, 'cross_camera_history') and len(self.cross_camera_history) > 0:
+                    assoc_count = len(self.cross_camera_history)
+                    assoc_label = f"Cross-cam assoc: {assoc_count}"
+                    cv2.putText(vis_frame, assoc_label, (10, 90),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+                vis_frames[camera_id] = vis_frame
+
+            return vis_frames
+
+        except Exception as e:
+            print(f"Error in visualization: {e}")
+            # Return original frames if visualization fails
+            return frames.copy() if frames else {}
